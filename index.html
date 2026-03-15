@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hex</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #141414;
+      --surface:     #1c1c1c;
+      --border:      #2e2e2e;
+      --border-mid:  #3a3a3a;
+      --text:        #d8d8d8;
+      --text-dim:    #666;
+      --text-muted:  #444;
+      --red:         #c93535;
+      --red-hi:      #e84545;
+      --blue:        #2878c0;
+      --blue-hi:     #3a94dc;
+      --cell-bg:     #252525;
+      --font: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, 'Courier New', monospace;
+    }
+
+    html, body {
+      min-height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 12px;
+      line-height: 1;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 32px 20px;
+      gap: 18px;
+      user-select: none;
+    }
+
+    /* ── Header ── */
+    #title {
+      font-size: 10px;
+      letter-spacing: 5px;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      font-weight: 400;
+    }
+
+    /* ── Status bar ── */
+    #status {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      border: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    .s-cell {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 14px;
+      border-right: 1px solid var(--border);
+      font-size: 10px;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+    .s-cell:last-child { border-right: none; }
+
+    .pip {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      transition: background 0.25s;
+    }
+
+    #player-label { transition: color 0.25s; }
+
+    button {
+      background: none;
+      border: none;
+      font-family: var(--font);
+      cursor: pointer;
+      font-size: 10px;
+      letter-spacing: 1px;
+      padding: 7px 14px;
+      border-right: 1px solid var(--border);
+      color: var(--text-dim);
+      transition: color 0.15s, background 0.15s;
+    }
+    button:last-child { border-right: none; }
+    button:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+
+    #swap-btn { color: var(--blue-hi); border-right: 1px solid var(--border); }
+    #swap-btn:hover { background: rgba(32,96,160,0.12); }
+
+    /* ── Legend ── */
+    #legend {
+      display: flex;
+      gap: 20px;
+      font-size: 10px;
+      letter-spacing: 0.8px;
+      color: var(--text-dim);
+    }
+    .leg { display: flex; align-items: center; gap: 6px; }
+    .leg-pip { width: 6px; height: 6px; border-radius: 50%; }
+
+    /* ── Board ── */
+    #board-wrap { overflow: auto; max-width: 100%; }
+    svg { display: block; }
+
+    .win-path { animation: wp 1.1s ease-in-out infinite alternate; }
+    @keyframes wp {
+      from { opacity: 0.75; }
+      to   { opacity: 1; filter: brightness(1.35); }
+    }
+
+    /* ── Rules ── */
+    #rules {
+      font-size: 10px;
+      color: var(--text-muted);
+      letter-spacing: 0.5px;
+      line-height: 2;
+      text-align: center;
+      max-width: 500px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="title">hex</div>
+
+<div id="status">
+  <div class="s-cell">
+    <div class="pip" id="pip"></div>
+    <span id="player-label"></span>
+  </div>
+  <div class="s-cell" id="move-cell">move 0</div>
+  <button id="swap-btn" style="display:none">⇄ swap</button>
+  <div class="s-cell" id="swapped-cell" style="display:none; color: var(--blue-hi)">swapped</div>
+  <button id="new-btn">new game</button>
+</div>
+
+<div id="legend">
+  <div class="leg"><div class="leg-pip" style="background:var(--red)"></div>red: top ↔ bottom</div>
+  <div class="leg"><div class="leg-pip" style="background:var(--blue)"></div>blue: left ↔ right</div>
+</div>
+
+<div id="board-wrap"><svg id="svg"></svg></div>
+
+<div id="rules">
+  click an empty cell to place a stone &middot; red connects top to bottom &middot; blue connects left to right<br>
+  swap rule: after red's first move, blue may claim that stone as their own
+</div>
+
+<script>
+// ── constants ──────────────────────────────────────────────────────────────
+
+const N    = 11;
+const HR   = 24;                        // hex radius
+const HW   = Math.sqrt(3) * HR;         // hex width
+const HH   = 2 * HR;                    // hex height
+const SVGW = N * HW + (N * HW / 2) + HR * 4;
+const SVGH = N * HH * 0.75 + HR * 3;
+
+const C = {
+  red:     '#b03030', redHi:  '#d44040',
+  blue:    '#2060a0', blueHi: '#3080c0',
+  cellBg:  '#141414',
+  edgeRed:  'rgba(201,53,53,0.35)',
+  edgeBlue: 'rgba(40,120,192,0.35)',
+};
+
+// ── state ──────────────────────────────────────────────────────────────────
+
+let S = fresh();
+
+function fresh() {
+  return {
+    board:         Array.from({length: N}, () => Array(N).fill(null)),
+    current:       'red',
+    winner:        null,
+    hovered:       null,
+    moveCount:     0,
+    winCells:      new Set(),
+    swapAvailable: false,
+    swapped:       false,
+    firstMove:     null,
+  };
+}
+
+// ── game logic ─────────────────────────────────────────────────────────────
+
+class UF {
+  constructor(n) {
+    this.p = Array.from({length: n}, (_, i) => i);
+    this.r = Array(n).fill(0);
+  }
+  find(x) {
+    if (this.p[x] !== x) this.p[x] = this.find(this.p[x]);
+    return this.p[x];
+  }
+  union(x, y) {
+    const px = this.find(x), py = this.find(y);
+    if (px === py) return;
+    if (this.r[px] < this.r[py]) this.p[px] = py;
+    else if (this.r[px] > this.r[py]) this.p[py] = px;
+    else { this.p[py] = px; this.r[px]++; }
+  }
+  conn(x, y) { return this.find(x) === this.find(y); }
+}
+
+const DIRS = [[-1,0],[1,0],[0,-1],[0,1],[-1,1],[1,-1]];
+
+function checkWinner(board) {
+  const uf = new UF(N * N + 4);
+  const [T, B, L, R] = [N*N, N*N+1, N*N+2, N*N+3];
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      const cell = board[r][c];
+      if (!cell) continue;
+      const idx = r * N + c;
+      if (cell === 'red') {
+        if (r === 0)   uf.union(idx, T);
+        if (r === N-1) uf.union(idx, B);
+      } else {
+        if (c === 0)   uf.union(idx, L);
+        if (c === N-1) uf.union(idx, R);
+      }
+      for (const [dr, dc] of DIRS) {
+        const nr = r+dr, nc = c+dc;
+        if (nr >= 0 && nr < N && nc >= 0 && nc < N && board[nr][nc] === cell)
+          uf.union(idx, nr * N + nc);
+      }
+    }
+  }
+  if (uf.conn(T, B)) return 'red';
+  if (uf.conn(L, R)) return 'blue';
+  return null;
+}
+
+function findWinPath(board, winner) {
+  const visited = new Set(), path = new Set();
+  const starts = [];
+  for (let i = 0; i < N; i++) {
+    if (winner === 'red'  && board[0][i] === 'red')  starts.push([0, i]);
+    if (winner === 'blue' && board[i][0] === 'blue') starts.push([i, 0]);
+  }
+  function dfs(r, c) {
+    const key = `${r},${c}`;
+    if (visited.has(key)) return false;
+    if (winner === 'red'  && r === N-1) { path.add(key); return true; }
+    if (winner === 'blue' && c === N-1) { path.add(key); return true; }
+    visited.add(key);
+    for (const [dr, dc] of DIRS) {
+      const nr = r+dr, nc = c+dc;
+      if (nr >= 0 && nr < N && nc >= 0 && nc < N && board[nr][nc] === winner)
+        if (dfs(nr, nc)) { path.add(key); return true; }
+    }
+    return false;
+  }
+  for (const [r, c] of starts) dfs(r, c);
+  return path;
+}
+
+// ── svg helpers ────────────────────────────────────────────────────────────
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function el(tag, attrs = {}) {
+  const e = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+
+function hexPath(cx, cy, r) {
+  const pts = Array.from({length: 6}, (_, i) => {
+    const a = Math.PI / 180 * (60 * i - 30);
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  });
+  return pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(2)},${y.toFixed(2)}`).join(' ') + ' Z';
+}
+
+function center(row, col) {
+  return {
+    x: col * HW + row * HW / 2 + HR * 2,
+    y: row * HH * 0.75 + HR * 1.5,
+  };
+}
+
+// ── render ─────────────────────────────────────────────────────────────────
+
+function render() {
+  updateStatus();
+  drawBoard();
+}
+
+function updateStatus() {
+  const { current, winner, moveCount, swapAvailable, swapped } = S;
+
+  document.getElementById('move-cell').textContent = `move ${moveCount}`;
+
+  const pip   = document.getElementById('pip');
+  const label = document.getElementById('player-label');
+
+  if (winner) {
+    pip.style.background   = winner === 'red' ? C.redHi : C.blueHi;
+    label.textContent      = `${winner} wins`;
+    label.style.color      = winner === 'red' ? C.redHi : C.blueHi;
+  } else {
+    pip.style.background   = current === 'red' ? C.red : C.blue;
+    label.textContent      = `${current} to play`;
+    label.style.color      = current === 'red' ? C.redHi : C.blueHi;
+  }
+
+  const swapBtn    = document.getElementById('swap-btn');
+  const swappedCell = document.getElementById('swapped-cell');
+
+  swapBtn.style.display     = (swapAvailable && !winner) ? '' : 'none';
+  swappedCell.style.display = (swapped && !swapAvailable) ? '' : 'none';
+}
+
+function drawBoard() {
+  const svg = document.getElementById('svg');
+  svg.innerHTML = '';
+  svg.setAttribute('width',  SVGW);
+  svg.setAttribute('height', SVGH);
+
+  const { board, current, winner, hovered, winCells } = S;
+
+  // border edges
+  for (let c = 0; c < N; c++) {
+    drawBorderHex(svg, -1, c, 'red');
+    drawBorderHex(svg, N,  c, 'red');
+  }
+  for (let r = 0; r < N; r++) {
+    drawBorderHex(svg, r, -1, 'blue');
+    drawBorderHex(svg, r,  N, 'blue');
+  }
+
+  // cells
+  for (let row = 0; row < N; row++) {
+    for (let col = 0; col < N; col++) {
+      const cell    = board[row][col];
+      const { x, y } = center(row, col);
+      const isHov   = hovered && hovered[0] === row && hovered[1] === col;
+      const isWin   = winCells.has(`${row},${col}`);
+
+      let fill = C.cellBg;
+      if      (cell === 'red')  fill = isWin ? C.redHi  : C.red;
+      else if (cell === 'blue') fill = isWin ? C.blueHi : C.blue;
+      else if (isHov && !winner)
+        fill = current === 'red'
+          ? 'rgba(176,48,48,0.22)'
+          : 'rgba(32,96,160,0.22)';
+
+      const stroke   = cell
+        ? (cell === 'red' ? '#a02828' : '#1a5e96')
+        : '#333';
+      const strokeW  = cell ? '1' : '1';
+
+      const g = el('g');
+      g.style.cursor = (cell || winner) ? 'default' : 'pointer';
+      if (isWin) g.classList.add('win-path');
+
+      g.appendChild(el('path', {
+        d: hexPath(x, y, HR - 1.5),
+        fill, stroke, 'stroke-width': strokeW,
+      }));
+
+      if (cell) {
+        g.appendChild(el('circle', {
+          cx: x, cy: y, r: 4,
+          fill: cell === 'red'
+            ? 'rgba(255,170,170,0.3)'
+            : 'rgba(140,200,255,0.3)',
+        }));
+      }
+
+      if (isHov && !cell && !winner) {
+        const t = el('text', {
+          x, y: y + 1,
+          'text-anchor': 'middle', 'dominant-baseline': 'middle',
+          'font-size': '8', 'font-family': 'SF Mono,Fira Code,Consolas,monospace',
+          fill: current === 'red' ? 'rgba(212,64,64,0.75)' : 'rgba(48,128,192,0.75)',
+          'pointer-events': 'none',
+        });
+        t.textContent = `${String.fromCharCode(65 + col)}${row + 1}`;
+        g.appendChild(t);
+      }
+
+      if (!cell && !winner) {
+        g.addEventListener('mouseenter', () => { S.hovered = [row, col]; drawBoard(); });
+        g.addEventListener('mouseleave', () => { S.hovered = null;       drawBoard(); });
+        g.addEventListener('click',      () => handleClick(row, col));
+      }
+
+      svg.appendChild(g);
+    }
+  }
+
+  // axis labels
+  const labelStyle = {
+    'text-anchor': 'middle', 'dominant-baseline': 'middle',
+    'font-size': '9', 'font-family': 'SF Mono,Fira Code,Consolas,monospace',
+  };
+
+  for (let i = 0; i < N; i++) {
+    const letter = String.fromCharCode(65 + i);
+    const tc = center(0,   i);
+    const bc = center(N-1, i);
+
+    for (const { x, y } of [{ x: tc.x, y: tc.y - HR * 1.2 }, { x: bc.x, y: bc.y + HR * 1.2 }]) {
+      const t = el('text', { ...labelStyle, x, y, fill: 'rgba(176,48,48,0.4)' });
+      t.textContent = letter;
+      svg.appendChild(t);
+    }
+
+    const lc = center(i, 0);
+    const rc = center(i, N-1);
+    for (const { x, y } of [{ x: lc.x - HW * 0.9, y: lc.y }, { x: rc.x + HW * 0.9, y: rc.y }]) {
+      const t = el('text', { ...labelStyle, x, y, fill: 'rgba(32,96,160,0.45)' });
+      t.textContent = i + 1;
+      svg.appendChild(t);
+    }
+  }
+}
+
+function drawBorderHex(svg, row, col, player) {
+  const baseRow = Math.max(0, Math.min(N-1, row));
+  const baseCol = Math.max(0, Math.min(N-1, col));
+  const { x: bx, y: by } = center(baseRow, baseCol);
+  const offX = col < 0 ? -HW : col >= N ? HW : 0;
+  const offY = row < 0 ? -HH * 0.75 : row >= N ? HH * 0.75 : 0;
+  svg.appendChild(el('path', {
+    d:    hexPath(bx + offX, by + offY, HR * 0.87),
+    fill: player === 'red' ? C.edgeRed : C.edgeBlue,
+  }));
+}
+
+// ── handlers ───────────────────────────────────────────────────────────────
+
+function handleClick(row, col) {
+  if (S.winner || S.board[row][col]) return;
+
+  const newBoard = S.board.map(r => [...r]);
+  newBoard[row][col] = S.current;
+  const w = checkWinner(newBoard);
+
+  S.board = newBoard;
+  S.moveCount++;
+  S.hovered = null;
+
+  if (w) {
+    S.winner   = w;
+    S.winCells = findWinPath(newBoard, w);
+  } else if (S.moveCount === 1) {
+    S.firstMove     = { row, col };
+    S.swapAvailable = true;
+    S.current       = 'blue';
+  } else {
+    S.swapAvailable = false;
+    S.current       = S.current === 'red' ? 'blue' : 'red';
+  }
+
+  render();
+}
+
+function handleSwap() {
+  if (!S.swapAvailable || S.winner) return;
+  const { row, col } = S.firstMove;
+  const newBoard = S.board.map(r => [...r]);
+  newBoard[row][col] = 'blue';
+  S.board         = newBoard;
+  S.swapAvailable = false;
+  S.swapped       = true;
+  S.current       = 'red';
+  S.moveCount++;
+  render();
+}
+
+// ── init ───────────────────────────────────────────────────────────────────
+
+document.getElementById('swap-btn').addEventListener('click', handleSwap);
+document.getElementById('new-btn').addEventListener('click', () => { S = fresh(); render(); });
+
+render();
+</script>
+</body>
+</html>
