@@ -371,10 +371,12 @@ function drawBoard() {
       g.style.cursor = (cell || winner) ? 'default' : 'pointer';
       if (isWin) g.classList.add('win-path');
 
-      g.appendChild(el('path', {
+      const hoverFill = current === 'red' ? 'rgba(176,48,48,0.22)' : 'rgba(32,96,160,0.22)';
+      const pathEl = el('path', {
         d: hexPath(x, y, HR - 1.5),
         fill, stroke, 'stroke-width': strokeW,
-      }));
+      });
+      g.appendChild(pathEl);
 
       if (cell) {
         g.appendChild(el('circle', {
@@ -385,22 +387,27 @@ function drawBoard() {
         }));
       }
 
-      if (isHov && !cell && !winner) {
-        const t = el('text', {
+      if (!cell && !winner) {
+        const hint = el('text', {
           x, y: y + 1,
           'text-anchor': 'middle', 'dominant-baseline': 'middle',
           'font-size': '8', 'font-family': 'SF Mono,Fira Code,Consolas,monospace',
           fill: current === 'red' ? 'rgba(212,64,64,0.75)' : 'rgba(48,128,192,0.75)',
           'pointer-events': 'none',
+          display: 'none',
         });
-        t.textContent = `${String.fromCharCode(65 + col)}${row + 1}`;
-        g.appendChild(t);
-      }
+        hint.textContent = `${String.fromCharCode(65 + col)}${row + 1}`;
+        g.appendChild(hint);
 
-      if (!cell && !winner) {
-        g.addEventListener('mouseenter', () => { S.hovered = [row, col]; drawBoard(); });
-        g.addEventListener('mouseleave', () => { S.hovered = null;       drawBoard(); });
-        g.addEventListener('click',      () => handleClick(row, col));
+        g.addEventListener('mouseenter', () => {
+          pathEl.setAttribute('fill', hoverFill);
+          hint.setAttribute('display', '');
+        });
+        g.addEventListener('mouseleave', () => {
+          pathEl.setAttribute('fill', C.cellBg);
+          hint.setAttribute('display', 'none');
+        });
+        g.addEventListener('click', () => handleClick(row, col));
       }
 
       svg.appendChild(g);
