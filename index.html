@@ -517,7 +517,10 @@ function drawBoard() {
   for (let i = 0; i < N; i++) {
     const letter = String.fromCharCode(65 + i);
     const tc = center(0, i), bc = center(N-1, i);
-    for (const { x, y } of [{ x: tc.x, y: tc.y - HR * 1.2 }, { x: bc.x, y: bc.y + HR * 1.2 }]) {
+    for (const { x, y } of [
+      { x: tc.x - HW * 0.5, y: tc.y - HR * 1.2 },
+      { x: bc.x + HW * 0.5, y: bc.y + HR * 1.2 },
+    ]) {
       const t = el('text', { ...labelStyle, x, y, fill: 'rgba(176,48,48,0.4)' });
       t.textContent = letter;
       svg.appendChild(t);
@@ -535,7 +538,12 @@ function drawBorderHex(svg, row, col, player) {
   const baseRow = Math.max(0, Math.min(N-1, row));
   const baseCol = Math.max(0, Math.min(N-1, col));
   const { x: bx, y: by } = center(baseRow, baseCol);
-  const offX = col < 0 ? -HW : col >= N ? HW : 0;
+
+  let offX = 0;
+  if (col < 0) { offX = -HW; }
+  else if (col >= N) { offX = HW; }
+  else if (row < 0) { offX = -HW * 0.5; }
+  else if (row >= N) { offX = HW * 0.5; }
   const offY = row < 0 ? -HH * 0.75 : row >= N ? HH * 0.75 : 0;
   svg.appendChild(el('path', {
     d:    hexPath(bx + offX, by + offY, HR * 0.87),
