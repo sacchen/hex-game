@@ -9,9 +9,7 @@
 
     :root {
       --bg:          #141414;
-      --surface:     #1c1c1c;
       --border:      #2e2e2e;
-      --border-mid:  #3a3a3a;
       --text:        #d8d8d8;
       --text-dim:    #666;
       --text-muted:  #444;
@@ -43,7 +41,6 @@
       user-select: none;
     }
 
-    /* ── Header ── */
     #title {
       font-size: 10px;
       letter-spacing: 5px;
@@ -52,11 +49,9 @@
       font-weight: 400;
     }
 
-    /* ── Status bar ── */
     #status {
       display: flex;
       align-items: center;
-      gap: 0;
       border: 1px solid var(--border);
       overflow: hidden;
     }
@@ -72,7 +67,6 @@
       color: var(--text-dim);
       white-space: nowrap;
     }
-    .s-cell:last-child { border-right: none; }
 
     .pip {
       width: 7px;
@@ -99,10 +93,11 @@
     button:last-child { border-right: none; }
     button:hover { color: var(--text); background: rgba(255,255,255,0.03); }
 
-    #swap-btn { color: var(--blue-hi); border-right: 1px solid var(--border); }
+    #swap-btn { color: var(--blue-hi); }
     #swap-btn:hover { background: rgba(32,96,160,0.12); }
 
-    /* ── Legend ── */
+    #mode-btn.bot-active { color: var(--blue-hi); }
+
     #legend {
       display: flex;
       gap: 20px;
@@ -113,7 +108,6 @@
     .leg { display: flex; align-items: center; gap: 6px; }
     .leg-pip { width: 6px; height: 6px; border-radius: 50%; }
 
-    /* ── Board ── */
     #board-wrap { overflow: auto; max-width: 100%; }
     svg { display: block; }
 
@@ -123,7 +117,6 @@
       to   { opacity: 1; filter: brightness(1.35); }
     }
 
-    /* ── Rules ── */
     #rules {
       font-size: 10px;
       color: var(--text-muted);
@@ -146,6 +139,7 @@
   <div class="s-cell" id="move-cell">move 0</div>
   <button id="swap-btn" style="display:none">⇄ swap</button>
   <div class="s-cell" id="swapped-cell" style="display:none; color: var(--blue-hi)">swapped</div>
+  <button id="mode-btn">vs human</button>
   <button id="new-btn">new game</button>
 </div>
 
@@ -165,19 +159,115 @@
 // ── constants ──────────────────────────────────────────────────────────────
 
 const N    = 11;
-const HR   = 24;                        // hex radius
-const HW   = Math.sqrt(3) * HR;         // hex width
-const HH   = 2 * HR;                    // hex height
+const HR   = 24;
+const HW   = Math.sqrt(3) * HR;
+const HH   = 2 * HR;
 const SVGW = N * HW + (N * HW / 2) + HR * 4;
 const SVGH = N * HH * 0.75 + HR * 3;
 
 const C = {
-  red:     '#b03030', redHi:  '#d44040',
-  blue:    '#2060a0', blueHi: '#3080c0',
-  cellBg:  '#141414',
+  red:      '#c93535', redHi:   '#e84545',
+  blue:     '#2878c0', blueHi:  '#3a94dc',
+  cellBg:   '#252525',
   edgeRed:  'rgba(201,53,53,0.35)',
   edgeBlue: 'rgba(40,120,192,0.35)',
 };
+
+// ── bot worker (inline) ────────────────────────────────────────────────────
+// Game logic is duplicated here so the worker is self-contained.
+// To plug in a trained model: replace chooseMove() below.
+
+const WORKER_SRC = `
+const N = 11;
+const DIRS = [[-1,0],[1,0],[0,-1],[0,1],[-1,1],[1,-1]];
+
+class UF {
+  constructor(n) {
+    this.p = Array.from({length: n}, (_, i) => i);
+    this.r = Array(n).fill(0);
+  }
+  find(x) {
+    let root = x;
+    while (this.p[root] !== root) root = this.p[root];
+    while (this.p[x] !== root) { const nx = this.p[x]; this.p[x] = root; x = nx; }
+    return root;
+  }
+  union(x, y) {
+    const px = this.find(x), py = this.find(y);
+    if (px === py) return;
+    if (this.r[px] < this.r[py]) this.p[px] = py;
+    else if (this.r[px] > this.r[py]) this.p[py] = px;
+    else { this.p[py] = px; this.r[px]++; }
+  }
+  conn(x, y) { return this.find(x) === this.find(y); }
+}
+
+function checkWinner(board) {
+  const uf = new UF(N * N + 4);
+  const [T, B, L, R] = [N*N, N*N+1, N*N+2, N*N+3];
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      const cell = board[r][c];
+      if (!cell) continue;
+      const idx = r * N + c;
+      if (cell === 'red') {
+        if (r === 0)   uf.union(idx, T);
+        if (r === N-1) uf.union(idx, B);
+      } else {
+        if (c === 0)   uf.union(idx, L);
+        if (c === N-1) uf.union(idx, R);
+      }
+      for (const [dr, dc] of DIRS) {
+        const nr = r+dr, nc = c+dc;
+        if (nr >= 0 && nr < N && nc >= 0 && nc < N && board[nr][nc] === cell)
+          uf.union(idx, nr * N + nc);
+      }
+    }
+  }
+  if (uf.conn(T, B)) return 'red';
+  if (uf.conn(L, R)) return 'blue';
+  return null;
+}
+
+function validMoves(board) {
+  const moves = [];
+  for (let r = 0; r < N; r++)
+    for (let c = 0; c < N; c++)
+      if (!board[r][c]) moves.push([r, c]);
+  return moves;
+}
+
+// ── plug in your bot here ──────────────────────────────────────────────────
+// Receives: board (11x11 array of null/'red'/'blue'), color ('red'|'blue')
+// Returns:  [row, col]
+//
+// Current: random legal move (placeholder)
+// Replace with: MCTS, minimax, or ONNX neural net inference
+
+function chooseMove(board, color) {
+  const moves = validMoves(board);
+  return moves[Math.floor(Math.random() * moves.length)];
+}
+// ──────────────────────────────────────────────────────────────────────────
+
+self.onmessage = ({ data: { board, color } }) => {
+  self.postMessage(chooseMove(board, color));
+};
+`;
+
+const botWorker = new Worker(
+  URL.createObjectURL(new Blob([WORKER_SRC], { type: 'application/javascript' }))
+);
+
+botWorker.onmessage = ({ data: [row, col] }) => {
+  S.thinking = false;
+  handleClick(row, col);
+};
+
+// ── mode ───────────────────────────────────────────────────────────────────
+// MODE persists across new games; S resets each game.
+
+const MODE = { botActive: false, botColor: 'blue' };
 
 // ── state ──────────────────────────────────────────────────────────────────
 
@@ -194,10 +284,12 @@ function fresh() {
     swapAvailable: false,
     swapped:       false,
     firstMove:     null,
+    thinking:      false,
   };
 }
 
-// ── game logic ─────────────────────────────────────────────────────────────
+// ── game logic (main thread) ───────────────────────────────────────────────
+// Kept in sync with worker — UF is iterative to handle deep MCTS simulations.
 
 class UF {
   constructor(n) {
@@ -205,8 +297,10 @@ class UF {
     this.r = Array(n).fill(0);
   }
   find(x) {
-    if (this.p[x] !== x) this.p[x] = this.find(this.p[x]);
-    return this.p[x];
+    let root = x;
+    while (this.p[root] !== root) root = this.p[root];
+    while (this.p[x] !== root) { const nx = this.p[x]; this.p[x] = root; x = nx; }
+    return root;
   }
   union(x, y) {
     const px = this.find(x), py = this.find(y);
@@ -271,6 +365,16 @@ function findWinPath(board, winner) {
   return path;
 }
 
+// ── bot trigger ────────────────────────────────────────────────────────────
+
+function maybeTriggerBot() {
+  if (!MODE.botActive || S.winner || S.thinking) return;
+  if (S.current !== MODE.botColor) return;
+  S.thinking = true;
+  updateStatus();
+  botWorker.postMessage({ board: S.board, color: MODE.botColor });
+}
+
 // ── svg helpers ────────────────────────────────────────────────────────────
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -304,7 +408,7 @@ function render() {
 }
 
 function updateStatus() {
-  const { current, winner, moveCount, swapAvailable, swapped } = S;
+  const { current, winner, moveCount, swapAvailable, swapped, thinking } = S;
 
   document.getElementById('move-cell').textContent = `move ${moveCount}`;
 
@@ -312,20 +416,21 @@ function updateStatus() {
   const label = document.getElementById('player-label');
 
   if (winner) {
-    pip.style.background   = winner === 'red' ? C.redHi : C.blueHi;
-    label.textContent      = `${winner} wins`;
-    label.style.color      = winner === 'red' ? C.redHi : C.blueHi;
+    pip.style.background = winner === 'red' ? C.redHi : C.blueHi;
+    label.textContent    = `${winner} wins`;
+    label.style.color    = winner === 'red' ? C.redHi : C.blueHi;
+  } else if (thinking) {
+    pip.style.background = MODE.botColor === 'red' ? C.red : C.blue;
+    label.textContent    = 'thinking...';
+    label.style.color    = MODE.botColor === 'red' ? C.redHi : C.blueHi;
   } else {
-    pip.style.background   = current === 'red' ? C.red : C.blue;
-    label.textContent      = `${current} to play`;
-    label.style.color      = current === 'red' ? C.redHi : C.blueHi;
+    pip.style.background = current === 'red' ? C.red : C.blue;
+    label.textContent    = `${current} to play`;
+    label.style.color    = current === 'red' ? C.redHi : C.blueHi;
   }
 
-  const swapBtn    = document.getElementById('swap-btn');
-  const swappedCell = document.getElementById('swapped-cell');
-
-  swapBtn.style.display     = (swapAvailable && !winner) ? '' : 'none';
-  swappedCell.style.display = (swapped && !swapAvailable) ? '' : 'none';
+  document.getElementById('swap-btn').style.display    = (swapAvailable && !winner && !thinking) ? '' : 'none';
+  document.getElementById('swapped-cell').style.display = (swapped && !swapAvailable) ? '' : 'none';
 }
 
 function drawBoard() {
@@ -334,7 +439,8 @@ function drawBoard() {
   svg.setAttribute('width',  SVGW);
   svg.setAttribute('height', SVGH);
 
-  const { board, current, winner, hovered, winCells } = S;
+  const { board, current, winner, winCells, thinking } = S;
+  const interactive = !winner && !thinking;
 
   // border edges
   for (let c = 0; c < N; c++) {
@@ -349,45 +455,34 @@ function drawBoard() {
   // cells
   for (let row = 0; row < N; row++) {
     for (let col = 0; col < N; col++) {
-      const cell    = board[row][col];
+      const cell  = board[row][col];
       const { x, y } = center(row, col);
-      const isHov   = hovered && hovered[0] === row && hovered[1] === col;
-      const isWin   = winCells.has(`${row},${col}`);
+      const isWin = winCells.has(`${row},${col}`);
 
       let fill = C.cellBg;
       if      (cell === 'red')  fill = isWin ? C.redHi  : C.red;
       else if (cell === 'blue') fill = isWin ? C.blueHi : C.blue;
-      else if (isHov && !winner)
-        fill = current === 'red'
-          ? 'rgba(176,48,48,0.22)'
-          : 'rgba(32,96,160,0.22)';
 
-      const stroke   = cell
-        ? (cell === 'red' ? '#a02828' : '#1a5e96')
-        : '#333';
-      const strokeW  = cell ? '1' : '1';
-
+      const stroke  = cell ? (cell === 'red' ? '#a02828' : '#1a5e96') : '#333';
       const g = el('g');
-      g.style.cursor = (cell || winner) ? 'default' : 'pointer';
+      g.style.cursor = (cell || !interactive) ? 'default' : 'pointer';
       if (isWin) g.classList.add('win-path');
 
       const hoverFill = current === 'red' ? 'rgba(176,48,48,0.22)' : 'rgba(32,96,160,0.22)';
       const pathEl = el('path', {
         d: hexPath(x, y, HR - 1.5),
-        fill, stroke, 'stroke-width': strokeW,
+        fill, stroke, 'stroke-width': '1',
       });
       g.appendChild(pathEl);
 
       if (cell) {
         g.appendChild(el('circle', {
           cx: x, cy: y, r: 4,
-          fill: cell === 'red'
-            ? 'rgba(255,170,170,0.3)'
-            : 'rgba(140,200,255,0.3)',
+          fill: cell === 'red' ? 'rgba(255,170,170,0.3)' : 'rgba(140,200,255,0.3)',
         }));
       }
 
-      if (!cell && !winner) {
+      if (!cell && interactive) {
         const hint = el('text', {
           x, y: y + 1,
           'text-anchor': 'middle', 'dominant-baseline': 'middle',
@@ -419,20 +514,15 @@ function drawBoard() {
     'text-anchor': 'middle', 'dominant-baseline': 'middle',
     'font-size': '9', 'font-family': 'SF Mono,Fira Code,Consolas,monospace',
   };
-
   for (let i = 0; i < N; i++) {
     const letter = String.fromCharCode(65 + i);
-    const tc = center(0,   i);
-    const bc = center(N-1, i);
-
+    const tc = center(0, i), bc = center(N-1, i);
     for (const { x, y } of [{ x: tc.x, y: tc.y - HR * 1.2 }, { x: bc.x, y: bc.y + HR * 1.2 }]) {
       const t = el('text', { ...labelStyle, x, y, fill: 'rgba(176,48,48,0.4)' });
       t.textContent = letter;
       svg.appendChild(t);
     }
-
-    const lc = center(i, 0);
-    const rc = center(i, N-1);
+    const lc = center(i, 0), rc = center(i, N-1);
     for (const { x, y } of [{ x: lc.x - HW * 0.9, y: lc.y }, { x: rc.x + HW * 0.9, y: rc.y }]) {
       const t = el('text', { ...labelStyle, x, y, fill: 'rgba(32,96,160,0.45)' });
       t.textContent = i + 1;
@@ -456,7 +546,7 @@ function drawBorderHex(svg, row, col, player) {
 // ── handlers ───────────────────────────────────────────────────────────────
 
 function handleClick(row, col) {
-  if (S.winner || S.board[row][col]) return;
+  if (S.winner || S.board[row][col] || S.thinking) return;
 
   const newBoard = S.board.map(r => [...r]);
   newBoard[row][col] = S.current;
@@ -479,10 +569,11 @@ function handleClick(row, col) {
   }
 
   render();
+  maybeTriggerBot();
 }
 
 function handleSwap() {
-  if (!S.swapAvailable || S.winner) return;
+  if (!S.swapAvailable || S.winner || S.thinking) return;
   const { row, col } = S.firstMove;
   const newBoard = S.board.map(r => [...r]);
   newBoard[row][col] = 'blue';
@@ -492,12 +583,27 @@ function handleSwap() {
   S.current       = 'red';
   S.moveCount++;
   render();
+  maybeTriggerBot();
+}
+
+function newGame() {
+  S = fresh();
+  render();
+  maybeTriggerBot();
 }
 
 // ── init ───────────────────────────────────────────────────────────────────
 
 document.getElementById('swap-btn').addEventListener('click', handleSwap);
-document.getElementById('new-btn').addEventListener('click', () => { S = fresh(); render(); });
+document.getElementById('new-btn').addEventListener('click', newGame);
+
+document.getElementById('mode-btn').addEventListener('click', () => {
+  MODE.botActive = !MODE.botActive;
+  const btn = document.getElementById('mode-btn');
+  btn.textContent = MODE.botActive ? 'vs bot' : 'vs human';
+  btn.classList.toggle('bot-active', MODE.botActive);
+  newGame();
+});
 
 render();
 </script>
